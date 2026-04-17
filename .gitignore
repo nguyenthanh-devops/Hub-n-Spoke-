@@ -1,0 +1,12 @@
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files (Chứa thông tin nhạy cảm của hạ tầng)
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+
+# Ignore variables file (Nếu em có lưu Access Key ở đây)
+*.tfvars
