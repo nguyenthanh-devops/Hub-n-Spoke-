@@ -9,6 +9,25 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
+# 1. Sinh khóa Private Key thuật toán RSA
+resource "tls_private_key" "my_key" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+# 2. Đăng ký Public Key lên AWS
+resource "aws_key_pair" "deployer" {
+  key_name   = "capstone-key"
+  public_key = tls_private_key.my_key.public_key_openssh
+}
+
+# 3. Tự động lưu file .pem xuống máy tính
+resource "local_file" "private_key" {
+  content         = tls_private_key.my_key.private_key_pem
+  filename        = "${path.module}/capstone-key.pem"
+  file_permission = "0400" # Cấp quyền Read-only bảo mật cho file
+}
+
 # ==========================================
 # Kêu gọi Module tạo 4 VPC
 # ==========================================
@@ -49,6 +68,7 @@ module "ec2_1" {
   vpc_id        = module.vpc1.vpc_id
   subnet_id     = module.vpc1.subnet_id
   ami_id        = data.aws_ami.amazon_linux.id
+  key_name      = aws_key_pair.deployer.key_name
 }
 
 module "ec2_2" {
@@ -57,6 +77,7 @@ module "ec2_2" {
   vpc_id        = module.vpc2.vpc_id
   subnet_id     = module.vpc2.subnet_id
   ami_id        = data.aws_ami.amazon_linux.id
+  key_name      = aws_key_pair.deployer.key_name
 }
 
 module "ec2_3" {
@@ -65,6 +86,7 @@ module "ec2_3" {
   vpc_id        = module.vpc3.vpc_id
   subnet_id     = module.vpc3.subnet_id
   ami_id        = data.aws_ami.amazon_linux.id
+  key_name      = aws_key_pair.deployer.key_name
 }
 
 module "ec2_4" {
@@ -73,4 +95,5 @@ module "ec2_4" {
   vpc_id        = module.vpc4.vpc_id
   subnet_id     = module.vpc4.subnet_id
   ami_id        = data.aws_ami.amazon_linux.id
+  key_name      = aws_key_pair.deployer.key_name
 }
