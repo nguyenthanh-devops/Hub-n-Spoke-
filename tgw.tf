@@ -30,10 +30,11 @@ resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_att_2" {
 }
 
 resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_att_3" {
-  subnet_ids         = [module.vpc3.subnet_id]
+  subnet_ids         =[aws_subnet.tgw_attach_subnet_vpc3.id] 
   transit_gateway_id = aws_ec2_transit_gateway.main_tgw.id
-  vpc_id             = module.vpc3.vpc_id
-  tags               = { Name = "TGW-Attachment-VPC3" }
+  vpc_id             = aws_vpc.vpc3_inspection.id
+  appliance_mode_support = "enable" 
+  tags = { Name = "TGW-Attachment-VPC3-Inspection" }
 }
 
 resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_att_4" {
@@ -58,6 +59,12 @@ resource "aws_ec2_transit_gateway_route_table" "private_rt" {
   tags = { Name = "TGW-RT-Private-Isolated" }
 }
 
+# Bảng 3 dành riêng cho VPC 3 (Sau khi đã soi mã độc xong)
+resource "aws_ec2_transit_gateway_route_table" "inspection_rt" {
+  transit_gateway_id = aws_ec2_transit_gateway.main_tgw.id
+  tags = { Name = "TGW-RT-Inspection-PostFW" }
+}
+
 # ==========================================
 # 4. ASSOCIATIONS (Ai dùng Bảng nào?)
 # ==========================================
@@ -67,7 +74,7 @@ resource "aws_ec2_transit_gateway_route_table_association" "assoc_vpc1" {
 }
 resource "aws_ec2_transit_gateway_route_table_association" "assoc_vpc3" {
   transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.tgw_att_3.id
-  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.public_rt.id
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.inspection_rt.id
 }
 resource "aws_ec2_transit_gateway_route_table_association" "assoc_vpc2" {
   transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.tgw_att_2.id
@@ -114,13 +121,12 @@ locals {
   vpc4_routes = [var.vpc_cidrs["vpc1"], var.vpc_cidrs["vpc2"], var.vpc_cidrs["vpc3"]]
 }
 
-resource "aws_route" "routes_from_vpc1" {
-  count                  = length(local.vpc1_routes)
-  route_table_id         = module.vpc1.route_table_id
-  destination_cidr_block = local.vpc1_routes[count.index]
-  transit_gateway_id     = aws_ec2_transit_gateway.main_tgw.id
-  depends_on             = [aws_ec2_transit_gateway_vpc_attachment.tgw_att_1]
-}
+resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_att_1" {
+  subnet_ids         =[aws_subnet.tgw_subnet_vpc1.id] # Sửa thành subnet TGW
+  transit_gateway_id = aws_ec2_transit_gateway.main_tgw.id
+  vpc_id             = aws_vpc.vpc1_egress.id          # Sửa thành VPC 1 egress
+  tags               = { Name = "TGW-Attachment-VPC1-Egress" }
+} 
 
 resource "aws_route" "routes_from_vpc2" {
   count                  = length(local.vpc2_routes)
@@ -142,6 +148,48 @@ resource "aws_route" "routes_from_vpc4" {
   count                  = length(local.vpc4_routes)
   route_table_id         = module.vpc4.route_table_id
   destination_cidr_block = local.vpc4_routes[count.index]
+  transit_gateway_id     = aws_ec2_transit_gateway.main_tgw.id
+  depends_on             =[aws_ec2_transit_gateway_vpc_attachment.tgw_att_4]
+}
+
+# Bảng Public_RT (VPC 1) muốn đi VPC 4 -> Ép chạy sang VPC 3 (Firewall)
+resource "aws_ec2_transit_gateway_route" "vpc1_to_vpc4_via_fw" {
+  destination_cidr_block         = "172.16.4.0/24"
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.public_rt.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.tgw_att_3.id
+}
+
+resource "aws_ec2_transit_gateway_route" "vpc4_to_vpc1_via_fw" {
+  destination_cidr_block         = "172.16.1.0/24"
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.private_rt.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.tgw_att_3.id
+}
+
+# Bảng Inspection_RT (VPC 3) sau khi duyệt xong -> Cho đi tiếp vào VPC 4
+resource "aws_ec2_transit_gateway_route" "vpc3_to_vpc4" {
+  destination_cidr_block         = "172.16.4.0/24"
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.inspection_rt.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.tgw_att_4.id
+}
+
+resource "aws_ec2_transit_gateway_route" "internet_route_for_private" {
+  destination_cidr_block         = "0.0.0.0/0"
+  transit_gateway_route_table_id = aws_ec2_transit_gateway_route_table.private_rt.id
+  transit_gateway_attachment_id  = aws_ec2_transit_gateway_vpc_attachment.tgw_att_1.id
+}
+
+# Báo cho máy ảo VPC 2: Muốn ra Internet thì tìm cục TGW
+resource "aws_route" "vpc2_default_to_tgw" {
+  route_table_id         = module.vpc2.route_table_id
+  destination_cidr_block = "0.0.0.0/0"
+  transit_gateway_id     = aws_ec2_transit_gateway.main_tgw.id
+  depends_on             =[aws_ec2_transit_gateway_vpc_attachment.tgw_att_2]
+}
+
+# Báo cho máy ảo VPC 4: Muốn ra Internet thì tìm cục TGW
+resource "aws_route" "vpc4_default_to_tgw" {
+  route_table_id         = module.vpc4.route_table_id
+  destination_cidr_block = "0.0.0.0/0"
   transit_gateway_id     = aws_ec2_transit_gateway.main_tgw.id
   depends_on             =[aws_ec2_transit_gateway_vpc_attachment.tgw_att_4]
 }

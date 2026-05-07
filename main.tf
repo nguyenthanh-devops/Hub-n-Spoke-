@@ -29,27 +29,14 @@ resource "local_file" "private_key" {
 }
 
 # ==========================================
-# Kêu gọi Module tạo 4 VPC
+# Kêu gọi Module tạo VPC
 # ==========================================
-module "vpc1" {
-  source    = "./modules/vpc"
-  vpc_cidr  = var.vpc_cidrs["vpc1"]
-  vpc_name  = "VPC-1-Public"
-  is_public = true
-}
 
 module "vpc2" {
   source    = "./modules/vpc"
   vpc_cidr  = var.vpc_cidrs["vpc2"]
   vpc_name  = "VPC-2-Private"
   is_public = false
-}
-
-module "vpc3" {
-  source    = "./modules/vpc"
-  vpc_cidr  = var.vpc_cidrs["vpc3"]
-  vpc_name  = "VPC-3-Public"
-  is_public = true
 }
 
 module "vpc4" {
@@ -60,31 +47,14 @@ module "vpc4" {
 }
 
 # ==========================================
-# Kêu gọi Module tạo 4 EC2 gắn vào 4 VPC trên
+# Kêu gọi Module tạo 4 EC2 gắn vào VPC trên
 # ==========================================
-module "ec2_1" {
-  source        = "./modules/ec2"
-  instance_name = "EC2-Host-1"
-  vpc_id        = module.vpc1.vpc_id
-  subnet_id     = module.vpc1.subnet_id
-  ami_id        = data.aws_ami.amazon_linux.id
-  key_name      = aws_key_pair.deployer.key_name
-}
 
 module "ec2_2" {
   source        = "./modules/ec2"
   instance_name = "EC2-Host-2"
   vpc_id        = module.vpc2.vpc_id
   subnet_id     = module.vpc2.subnet_id
-  ami_id        = data.aws_ami.amazon_linux.id
-  key_name      = aws_key_pair.deployer.key_name
-}
-
-module "ec2_3" {
-  source        = "./modules/ec2"
-  instance_name = "EC2-Host-3"
-  vpc_id        = module.vpc3.vpc_id
-  subnet_id     = module.vpc3.subnet_id
   ami_id        = data.aws_ami.amazon_linux.id
   key_name      = aws_key_pair.deployer.key_name
 }
