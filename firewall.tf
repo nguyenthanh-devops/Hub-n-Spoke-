@@ -1,5 +1,5 @@
 # =====================================================
-# 1. TẠO VPC 3 ĐẶC THÙ (INSPECTION VPC) VÀ TÁCH 2 SUBNET
+# 1. TẠO VPC 3 (INSPECTION VPC)
 # =====================================================
 resource "aws_vpc" "vpc3_inspection" {
   cidr_block           = "172.16.3.0/24"
@@ -7,108 +7,96 @@ resource "aws_vpc" "vpc3_inspection" {
   tags = { Name = "VPC-3-Inspection" }
 }
 
-# Subnet 1: Dành riêng cho Transit Gateway
+# Subnet 1: Chứa TGW Attachment
 resource "aws_subnet" "tgw_attach_subnet_vpc3" {
   vpc_id     = aws_vpc.vpc3_inspection.id
-  cidr_block = "172.16.3.0/28" 
+  cidr_block = "172.16.3.0/28"
   tags       = { Name = "VPC3-TGW-Attach-Subnet" }
 }
 
-# Subnet 2: Dành riêng cho Cục Firewall
+# Subnet 2: Chứa Máy ảo EC2 Firewall
 resource "aws_subnet" "fw_subnet_vpc3" {
   vpc_id     = aws_vpc.vpc3_inspection.id
-  cidr_block = "172.16.3.16/28" 
-  tags       = { Name = "VPC3-Firewall-Endpoint-Subnet" }
+  cidr_block = "172.16.3.16/28"
+  tags       = { Name = "VPC3-EC2-Firewall-Subnet" }
 }
 
 # =====================================================
-# 2. LOGGING - BẰNG CHỨNG ĐỂ DEMO (CLOUDWATCH)
+# 2. KHỞI TẠO EC2 FIREWALL (FREE TIER)
 # =====================================================
-resource "aws_cloudwatch_log_group" "fw_alerts" {
-  name              = "/aws/network-firewall/alerts"
-  retention_in_days = 3 # Giảm xuống 3 ngày cho tiết kiệm
-}
+# Security Group cho Firewall: Phải cho phép mọi luồng traffic đi qua để nó xử lý
+resource "aws_security_group" "sg_ec2_firewall" {
+  name        = "sg_ec2_firewall"
+  description = "Allow all traffic for routing"
+  vpc_id      = aws_vpc.vpc3_inspection.id
 
-# =====================================================
-# 3. RULE GROUP - "VŨ KHÍ" SURICATA (CHẶN MÃ ĐỘC L7)
-# =====================================================
-resource "aws_networkfirewall_rule_group" "ips_rules" {
-  capacity = 500
-  name     = "advanced-ips-rules"
-  type     = "STATEFUL"
-  rule_group {
-    rules_source {
-      rules_string = <<EOF
-# 1. Chặn SQL Injection giả lập
-drop http $HOME_NET any -> $EXTERNAL_NET any (http.uri; content:"union"; nocase; msg:"Mối đe dọa: SQL Injection detected (UNION)"; sid:1000001; rev:1;)
-drop http $HOME_NET any -> $EXTERNAL_NET any (http.uri; content:"select"; nocase; msg:"Mối đe dọa: SQL Injection detected (SELECT)"; sid:1000002; rev:1;)
-
-# 2. Chặn Domain độc hại
-drop http $HOME_NET any -> $EXTERNAL_NET any (http.host; dotprefix; content:"evil.com"; msg:"Mối đe dọa: Malicious Domain (evil.com)"; sid:1000003; rev:1;)
-
-# 3. Chặn Log4j giả lập
-drop tcp any any -> any any (content:"jndi:ldap"; nocase; msg:"Mối đe dọa: Log4j Exploit Attempt"; sid:1000004; rev:1;)
-
-# 4. Vẫn giữ chặn Ping Layer 4
-drop icmp 172.16.1.0/24 any -> 172.16.4.0/24 any (msg:"Mối đe dọa: Unauthorized Ping to Prod"; sid:1000005; rev:1;)
-EOF
-    }
-    stateful_rule_options {
-      rule_order = "STRICT_ORDER"
-    }
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks =["172.16.0.0/16"] # Nhận mọi traffic từ nội mạng
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-# =====================================================
-# 4. FIREWALL POLICY & KHỞI TẠO FIREWALL
-# =====================================================
-resource "aws_networkfirewall_firewall_policy" "fw_policy" {
-  name = "central-inspection-policy"
-  firewall_policy {
-    stateless_default_actions          = ["aws:forward_to_sfe"]
-    stateless_fragment_default_actions = ["aws:forward_to_sfe"]
-    stateful_rule_group_reference {
-      resource_arn = aws_networkfirewall_rule_group.ips_rules.arn
-    }
-  }
+resource "aws_instance" "ec2_firewall" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t3.micro" # MIỄN PHÍ
+  subnet_id              = aws_subnet.fw_subnet_vpc3.id
+  vpc_security_group_ids = [aws_security_group.sg_ec2_firewall.id]
+  key_name               = aws_key_pair.deployer.key_name
+
+  # TUYỆT KỸ 1: Bắt buộc phải TẮT tính năng này thì EC2 mới làm Router được
+  source_dest_check = false 
+
+  # TUYỆT KỸ 2: Script can thiệp vào nhân Linux (Bật IP Forwarding & iptables)
+  user_data = <<-EOF
+              #!/bin/bash
+              # 1. Bật tính năng chuyển tiếp gói tin (IP Forwarding)
+              echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+              sysctl -p
+
+              # 2. Xóa các luật cũ
+              iptables -F
+
+              # =========================================================
+              # 3. CHỐNG NMAP PORT SCANNING (XMAS SCAN & NULL SCAN)
+              # =========================================================
+              # Bắt và chặn các gói tin có cờ TCP bất hợp lệ (Kỹ thuật giấu thân của Hacker)
+              iptables -A FORWARD -p tcp --tcp-flags FIN,PSH,URG FIN,PSH,URG -j LOG --log-prefix "FW-DROP-NMAP-XMAS: "
+              iptables -A FORWARD -p tcp --tcp-flags FIN,PSH,URG FIN,PSH,URG -j DROP
+              
+              iptables -A FORWARD -p tcp --tcp-flags ALL NONE -j LOG --log-prefix "FW-DROP-NMAP-NULL: "
+              iptables -A FORWARD -p tcp --tcp-flags ALL NONE -j DROP
+
+              # =========================================================
+              # 4. CHỐNG TẤN CÔNG DDOS / DOS (PING FLOOD)
+              # =========================================================
+              # Cho phép Ping nhưng RATE LIMIT: Tối đa 1 gói/giây (bình thường)
+              iptables -A FORWARD -p icmp -m limit --limit 1/s --limit-burst 2 -j ACCEPT
+              
+              # Nếu vượt quá 1 gói/giây (Tấn công DoS) -> Ghi Log và Tiêu diệt
+              iptables -A FORWARD -p icmp -j LOG --log-prefix "FW-DROP-DOS-PING: "
+              iptables -A FORWARD -p icmp -j DROP
+              EOF
+              
+  tags = { Name = "EC2-Linux-Firewall" }
 }
 
-resource "aws_networkfirewall_firewall" "inspection_fw" {
-  name                = "Capstone-Inspection-FW"
-  firewall_policy_arn = aws_networkfirewall_firewall_policy.fw_policy.arn
-  vpc_id              = aws_vpc.vpc3_inspection.id
-  subnet_mapping {
-    subnet_id = aws_subnet.fw_subnet_vpc3.id # Trỏ đúng vào Subnet số 2
-  }
-}
-
-resource "aws_networkfirewall_logging_configuration" "fw_log_config" {
-  firewall_arn = aws_networkfirewall_firewall.inspection_fw.arn
-  logging_configuration {
-    log_destination_config {
-      log_destination = {
-        logGroup = aws_cloudwatch_log_group.fw_alerts.name
-      }
-      log_destination_type = "CloudWatchLogs"
-      log_type             = "ALERT"
-    }
-  }
-}
-
 # =====================================================
-# 5. ĐỊNH TUYẾN "MA THUẬT" TRONG VPC 3 (INLINE INSPECTION)
+# 3. ĐỊNH TUYẾN TRONG VPC 3 (ÉP GÓI TIN CHUI VÀO EC2)
 # =====================================================
-# Lấy Endpoint ID của Firewall (Tự động hóa)
-locals {
-  fw_endpoint_id = element([for ss in aws_networkfirewall_firewall.inspection_fw.firewall_status[0].sync_states : ss.attachment[0].endpoint_id if ss.attachment[0].subnet_id == aws_subnet.fw_subnet_vpc3.id], 0)
-}
-
-# Bảng định tuyến TGW Subnet: BẮT BUỘC ĐẨY VÀO FIREWALL
+# Bảng định tuyến TGW Subnet: BẮT BUỘC ĐẨY VÀO CARD MẠNG CỦA EC2
 resource "aws_route_table" "tgw_attach_rt" {
   vpc_id = aws_vpc.vpc3_inspection.id
   route {
-    cidr_block      = "0.0.0.0/0" 
-    vpc_endpoint_id = local.fw_endpoint_id
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = aws_instance.ec2_firewall.primary_network_interface_id
   }
   tags = { Name = "VPC3-TGW-Attach-RT" }
 }
@@ -117,14 +105,14 @@ resource "aws_route_table_association" "tgw_attach_assoc" {
   route_table_id = aws_route_table.tgw_attach_rt.id
 }
 
-# Bảng định tuyến FW Subnet: SOI XONG TRẢ LẠI TGW ĐỂ ĐI TỚI ĐÍCH
+# Bảng định tuyến EC2 Subnet: SOI XONG TRẢ LẠI TGW
 resource "aws_route_table" "fw_subnet_rt" {
   vpc_id = aws_vpc.vpc3_inspection.id
   route {
-    cidr_block         = "0.0.0.0/0" 
+    cidr_block         = "0.0.0.0/0"
     transit_gateway_id = aws_ec2_transit_gateway.main_tgw.id
   }
-  tags = { Name = "VPC3-Firewall-Subnet-RT" }
+  tags = { Name = "VPC3-EC2FW-Subnet-RT" }
 }
 resource "aws_route_table_association" "fw_assoc" {
   subnet_id      = aws_subnet.fw_subnet_vpc3.id
