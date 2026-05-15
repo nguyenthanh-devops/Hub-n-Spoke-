@@ -39,7 +39,7 @@ resource "aws_nat_gateway" "central_nat" {
   allocation_id = aws_eip.nat_eip.id
   subnet_id     = aws_subnet.public_subnet_vpc1.id # Đặt NAT ở mạng Public
   tags          = { Name = "Central-NAT-Gateway" }
-  depends_on    =[aws_internet_gateway.igw_vpc1]
+  depends_on    = [aws_internet_gateway.igw_vpc1]
 }
 
 # =====================================================

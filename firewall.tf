@@ -34,7 +34,7 @@ resource "aws_security_group" "sg_ec2_firewall" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks =["172.16.0.0/16"] # Nhận mọi traffic từ nội mạng
+    cidr_blocks = ["172.16.0.0/16"] # Nhận mọi traffic từ nội mạng
   }
   egress {
     from_port   = 0
@@ -84,7 +84,7 @@ resource "aws_instance" "ec2_firewall" {
               iptables -A FORWARD -p icmp -j LOG --log-prefix "FW-DROP-DOS-PING: "
               iptables -A FORWARD -p icmp -j DROP
               EOF
-              
+
   tags = { Name = "EC2-Linux-Firewall" }
 }
 

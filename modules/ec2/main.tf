@@ -7,13 +7,13 @@ resource "aws_security_group" "this" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks =["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"]
   }
   ingress {
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
-    cidr_blocks =["172.16.0.0/16"] # Chỉ cho ping trong mạng nội bộ
+    cidr_blocks = ["172.16.0.0/16"] # Chỉ cho ping trong mạng nội bộ
   }
   egress {
     from_port   = 0
